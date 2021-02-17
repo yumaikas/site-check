@@ -19,10 +19,17 @@ namespace site_check
             Dictionary<string, object> results = new Dictionary<string, object>();
             try
             {
-                foreach (call k in Argh.ToSkript(args).calls) {
-                    var env = obj.TopLevel();
-                    await env.eval(k);
-                    foreach(var kv in env.Output) {
+                Task<Dictionary<string, object>>[] tasks = Argh.ToSkript(args).calls.Select(k => {
+                    return Task.Run(async () => {
+                          var env = obj.TopLevel();
+                          await env.eval(k);
+                          return env.Output;
+                      });
+                }).ToArray();
+
+                foreach (var t in tasks) {
+                    var ouptut = await t;
+                    foreach(var kv in ouptut) {
                         results[kv.Key] = kv.Value;
                     }
                 }
@@ -140,9 +147,11 @@ namespace site_check
             }
             return kall;
         }
-        public static call ElementSelected(this call kall, IElement el) {
-            if (el == null)
+        public static call ElementSelected(this call kall, obj env) {
+            var lastCall = env.trace.Last();
+            if (lastCall.name == "sel" || lastCall.name == "id")
             {
+                return kall;
                 throw ObjException.MissingElementAndCalled(kall);
             }
             return kall;
@@ -202,7 +211,7 @@ namespace site_check
         private Dictionary<string, object> values = new Dictionary<string, object>();
         private bool resultSet = false;
         private object result = null;
-        private List<call> trace = new List<call>();
+        public List<call> trace = new List<call>();
         public Dictionary<string, object> Output { get; set; } = new Dictionary<string, object>();
 
         public obj() { }
@@ -241,9 +250,11 @@ namespace site_check
                 topLevel.result = null;
                 return false;
             };
+
             topLevel.funcs["all"] = async (kall) => {
                 Ensure.HasBlock(kall);
                 foreach (call k in kall.block.calls) {
+                    await topLevel.eval(k);
                     if (topLevel.resultSet && topLevel.result is false) {
                         topLevel.result = false;
                         return false;
@@ -267,9 +278,22 @@ namespace site_check
                 return false;
             };
 
+            topLevel.funcs["none"] = async (kall) => {
+                Ensure.ArityMatches(kall, 0).HasBlock();
+                foreach (call k in kall.block.calls) {
+                    await topLevel.eval(k);
+                    if (topLevel.resultSet && topLevel.result is true) {
+                        topLevel.result = false;
+                        return false;
+                    }
+                }
+                // If we didn't find any truthy values, then this was true
+                topLevel.result = true;
+                return false;
+            };
             topLevel.funcs["has-text"] = async (kall) =>
             {
-                Ensure.ArityMatches(kall, 1).NoBlock().ElementSelected(el);
+                Ensure.ArityMatches(kall, 1).NoBlock().ElementSelected(topLevel);
                 topLevel.result = el.TextContent.Contains(kall.args[0]);
                 return true;
             };
@@ -345,7 +369,6 @@ namespace site_check
         public List<call> calls { get; set; } = new List<call>();
         public async Task eval (obj env)
         {
-            bool isFaulted = false;
             for(var i = 0; i < calls.Count; i++)
             {
                 var k = calls[i];
