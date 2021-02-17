@@ -288,13 +288,32 @@ namespace site_check
             topLevel.funcs["site"] = async (kall) => {
                 Ensure.ArityMatches(kall, 1);
                 dom = await ctx.OpenAsync(kall.args[0]);
-                if (kall.block != null)
-                {
-                    await kall.block.eval(topLevel);
-                }
+                var outName = kall.block?.calls?.FirstOrDefault(x => x.name == "out")?.args?[0] ?? kall.args[0];
                 if (dom == null)
                 {
-                    ObjException.UrlFailed(kall);
+                    var failMsg = ObjException.UrlFailed(kall).Message;
+                    topLevel.Output[$"{outName}-error"] = failMsg;
+                    topLevel.Output[outName] = false;
+                    return false;
+                }
+                if (kall.block != null)
+                {
+                    try
+                    {
+                        await kall.block.eval(topLevel);
+                    }
+                    catch (ObjException)
+                    {
+                        // This sort of exception needs to pass through, since it indicates code is constructed incorrectly.
+                        throw;
+                    }
+                    catch (Exception ex) {
+                        topLevel.Output[$"{outName}-error"] = ex.Message;
+                        // In this case, we don't know if the site is up or down,
+                        // just that something went wrong
+                        topLevel.Output[outName] = null;
+                        return false;
+                    }
                 }
                 return false;
             };
@@ -330,17 +349,7 @@ namespace site_check
             for(var i = 0; i < calls.Count; i++)
             {
                 var k = calls[i];
-                if (isFaulted && k.name == "out") {
-                    env.Output[k.args[0]] = false;
-                    return;
-                }
-                try
-                {
-                    await env.eval(k);
-                } catch (ObjException ex) {
-                    env.Output[$"fault{cnt++}"] = ex.Message;
-                    isFaulted = true;
-                }
+                await env.eval(k);
             }
         }
     }
